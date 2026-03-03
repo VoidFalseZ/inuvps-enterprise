@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Series {
+  id           String   @id @default(uuid())
+  title        String   @unique
+  description  String?
+  thumbnailUrl String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  videos       Video[]
+}
+
+model Video {
+  id            String   @id @default(uuid())
+  filename      String   @unique
+  key           String
+  seriesId      String?
+  series        Series?  @relation(fields: [seriesId], references: [id])
+  episodeNumber Int?
+  title         String?
+  description   String?
+  lastModified  DateTime
+  size          BigInt
+  thumbnailUrl  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([seriesId])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  color     String   @default("#FFFFFF")
+  isAdmin   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  messages  Message[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  content   String
+  type      String   @default("text") // text, image, file
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  roomId    String   @default("global")
+  createdAt DateTime @default(now())
+
+  @@index([roomId])
+  @@index([createdAt])
+}
+
+model Job {
+  id        String   @id @default(uuid())
+  type      String
+  payload   String   // JSON stringified payload
+  status    String   @default("pending") // pending, processing, completed, failed
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, type])
+}
