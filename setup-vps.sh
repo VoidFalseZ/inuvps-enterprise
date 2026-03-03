@@ -60,9 +60,11 @@ cd /var/www
 if [ -d "inuvps-enterprise" ]; then
     echo "Project directory already exists, pulling latest..."
     cd inuvps-enterprise
-    git pull
+    git fetch
+    git checkout development
+    git pull origin development
 else
-    git clone https://github.com/VoidFalseZ/inuvps-enterprise.git
+    git clone -b development https://github.com/VoidFalseZ/inuvps-enterprise.git
     cd inuvps-enterprise
 fi
 
