@@ -9,6 +9,7 @@ export class VideoController {
         private readonly storageService: StorageService,
     ) { }
 
+    /** GET /api/videos?page=1&limit=20&series_title=... */
     @Get('api/videos')
     async getVideos(
         @Query('page') page?: string,
@@ -20,11 +21,56 @@ export class VideoController {
         return this.videoService.getPaginatedVideos(pageNum, limitNum, seriesTitle);
     }
 
+    /** GET /api/series — list all series with video counts */
     @Get('api/series')
     async getSeries() {
         return this.videoService.getSeriesList();
     }
 
+    /** GET /api/series/:title — all episodes for a specific series */
+    @Get('api/series/:title')
+    async getSeriesDetails(@Param('title') title: string) {
+        const decoded = decodeURIComponent(title);
+        const episodes = await this.videoService.getSeriesVideos(decoded);
+        if (!episodes || episodes.length === 0) {
+            throw new HttpException('Series not found', HttpStatus.NOT_FOUND);
+        }
+        return episodes;
+    }
+
+    /** GET /api/search?q=query — search videos and series */
+    @Get('api/search')
+    async searchVideos(@Query('q') query?: string) {
+        if (!query || query.trim().length === 0) {
+            return { videos: [], series: [] };
+        }
+        return this.videoService.searchVideos(query.trim());
+    }
+
+    /** GET /api/app_config — app version + admin config stub */
+    @Get('api/app_config')
+    getAppConfig() {
+        return {
+            app_version: {
+                latest: '1.0.5',
+                minimum: '1.0.0',
+                force_update: false,
+            },
+            update_dialog: {
+                enabled: false,
+                title: '',
+                message: '',
+                update_url: '',
+            },
+            notifications: [],
+            maintenance: {
+                enabled: false,
+                message: '',
+            },
+        };
+    }
+
+    /** GET /video/:filename — stream video from R2 with range support */
     @Get('video/:filename')
     async streamVideo(
         @Param('filename') filename: string,
