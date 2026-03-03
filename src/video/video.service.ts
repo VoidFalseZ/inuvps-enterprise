@@ -166,4 +166,85 @@ export class VideoService {
             where: { filename },
         });
     }
+
+    /**
+     * Scan R2 bucket and upsert all videos + series into the database.
+     * Call this once after first deploy (or via POST /api/admin/sync).
+     * Parses "Series Title/EP 01.mp4" or "Series Title - EP 01.mp4" filename patterns.
+     */
+    async syncFromR2(): Promise<{ synced: number; series: number }> {
+        this.logger.log('Starting R2 → DB sync...');
+        const videos = await this.storageService.listVideos();
+        this.logger.log(`Found ${videos.length} videos in R2`);
+
+        let syncedCount = 0;
+        const seriesCache: Record<string, string> = {}; // title → id
+
+        for (const video of videos) {
+            const filename: string = (video.filename as string) || '';
+            const key: string = (video.key as string) || '';
+
+            // Parse series title from key path: "SeriesName/filename.mp4" or flat "Series Name - EP01.mp4"
+            let seriesTitle = 'Uncategorized';
+            let episodeNumber: number | null = null;
+
+            const keyParts = key.split('/');
+            if (keyParts.length >= 2) {
+                // Folder-based: "My Series/ep01.mp4"
+                seriesTitle = keyParts.slice(0, keyParts.length - 1).join('/');
+            } else {
+                // Flat: "My Series - EP 01.mp4" or "My Series EP01.mp4"
+                const dashMatch = filename.match(/^(.+?)\s*[-–]\s*[Ee][Pp]?\s*(\d+)/);
+                if (dashMatch) {
+                    seriesTitle = dashMatch[1].trim();
+                    episodeNumber = parseInt(dashMatch[2], 10);
+                } else {
+                    const epMatch = filename.match(/^(.+?)\s+[Ee][Pp]?\s*(\d+)/);
+                    if (epMatch) {
+                        seriesTitle = epMatch[1].trim();
+                        episodeNumber = parseInt(epMatch[2], 10);
+                    }
+                }
+            }
+
+            // Extract episode number from filename if not found yet
+            if (episodeNumber === null) {
+                const numMatch = filename.match(/[Ee][Pp]?\s*(\d+)/);
+                if (numMatch) episodeNumber = parseInt(numMatch[1], 10);
+            }
+
+            // Upsert Series
+            if (!seriesCache[seriesTitle]) {
+                const s = await this.prisma.series.upsert({
+                    where: { title: seriesTitle },
+                    update: {},
+                    create: { title: seriesTitle },
+                });
+                seriesCache[seriesTitle] = s.id;
+            }
+
+            // Upsert Video
+            await this.prisma.video.upsert({
+                where: { filename },
+                update: {
+                    lastModified: video.lastModified ? new Date(video.lastModified as unknown as string) : new Date(),
+                    size: video.size ? BigInt(video.size as number) : BigInt(0),
+                },
+                create: {
+                    filename,
+                    key,
+                    seriesId: seriesCache[seriesTitle],
+                    episodeNumber,
+                    title: null,
+                    lastModified: video.lastModified ? new Date(video.lastModified as unknown as string) : new Date(),
+                    size: video.size ? BigInt(video.size as number) : BigInt(0),
+                },
+            });
+
+            syncedCount++;
+        }
+
+        this.logger.log(`Sync complete: ${syncedCount} videos, ${Object.keys(seriesCache).length} series.`);
+        return { synced: syncedCount, series: Object.keys(seriesCache).length };
+    }
 }

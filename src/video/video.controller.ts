@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Res, HttpException, HttpStatus, Headers } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Res, HttpException, HttpStatus, Headers } from '@nestjs/common';
 import { VideoService } from './video.service';
 import { StorageService } from '../storage/storage.service';
 
@@ -45,6 +45,12 @@ export class VideoController {
             return { videos: [], series: [] };
         }
         return this.videoService.searchVideos(query.trim());
+    }
+
+    /** POST /api/admin/sync — scan R2 bucket and populate the database */
+    @Post('api/admin/sync')
+    async syncFromR2() {
+        return this.videoService.syncFromR2();
     }
 
     /** GET /api/app_config — app version + admin config stub */
