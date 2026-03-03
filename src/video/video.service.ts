@@ -161,69 +161,65 @@ export class VideoService {
         };
     }
 
-    async findByFilename(filename: string) {
-        return this.prisma.video.findUnique({
-            where: { filename },
-        });
-    }
-
-    /**
-     * Scan R2 bucket and upsert all videos + series into the database.
-     * Call this once after first deploy (or via POST /api/admin/sync).
-     * Parses "Series Title/EP 01.mp4" or "Series Title - EP 01.mp4" filename patterns.
-     */
     async syncFromR2(): Promise<{ synced: number; series: number }> {
         this.logger.log('Starting R2 → DB sync...');
-        const videos = await this.storageService.listVideos();
-        this.logger.log(`Found ${videos.length} videos in R2`);
+
+        // Load legacy metadata.json if present (same path as migrate-data.ts)
+        const possiblePaths = [
+            require('path').join(process.cwd(), '..', 'inuvps', 'cache', 'metadata.json'),
+            require('path').join(process.cwd(), 'inuvps', 'cache', 'metadata.json'),
+            require('path').join('/var/www', 'inuvps', 'cache', 'metadata.json'),
+        ];
+        let metadata: Record<string, any> = {};
+        for (const p of possiblePaths) {
+            if (require('fs').existsSync(p)) {
+                metadata = JSON.parse(require('fs').readFileSync(p, 'utf8'));
+                this.logger.log(`Loaded ${Object.keys(metadata).length} metadata entries from ${p}`);
+                break;
+            }
+        }
+        if (!Object.keys(metadata).length) {
+            this.logger.warn('metadata.json not found — falling back to filename parsing');
+        }
+
+        const r2Videos = await this.storageService.listVideos();
+        this.logger.log(`Found ${r2Videos.length} videos in R2`);
 
         let syncedCount = 0;
-        const seriesCache: Record<string, string> = {}; // title → id
+        const seriesCache: Record<string, string> = {};
 
-        for (const video of videos) {
+        for (const video of r2Videos) {
             const filename: string = (video.filename as string) || '';
             const key: string = (video.key as string) || '';
 
-            // Parse series title from key path: "SeriesName/filename.mp4" or flat "Series Name - EP01.mp4"
-            let seriesTitle = 'Uncategorized';
-            let episodeNumber: number | null = null;
+            // ── Resolve metadata ───────────────────────────────────────────
+            const meta = metadata[filename] || {};
+            let seriesTitle: string = meta.series_title || '';
+            let episodeNumber: number | null = meta.episode_number ?? null;
+            let displayTitle: string = meta.display_title || '';
 
-            const keyParts = key.split('/');
-            if (keyParts.length >= 2) {
-                // Folder-based: "My Series/ep01.mp4"
-                seriesTitle = keyParts.slice(0, keyParts.length - 1).join('/');
-            } else {
-                // Flat: "My Series - EP 01.mp4" or "My Series EP01.mp4"
-                const dashMatch = filename.match(/^(.+?)\s*[-–]\s*[Ee][Pp]?\s*(\d+)/);
-                if (dashMatch) {
-                    seriesTitle = dashMatch[1].trim();
-                    episodeNumber = parseInt(dashMatch[2], 10);
-                } else {
-                    const epMatch = filename.match(/^(.+?)\s+[Ee][Pp]?\s*(\d+)/);
-                    if (epMatch) {
-                        seriesTitle = epMatch[1].trim();
-                        episodeNumber = parseInt(epMatch[2], 10);
-                    }
-                }
+            // Fallback: try to parse from filename using fileParser utility
+            if (!seriesTitle) {
+                const parsed = require('../utils/fileParser').extractTitleAndEpisode(filename);
+                seriesTitle = parsed.seriesTitle || 'Uncategorized';
+                episodeNumber = parsed.episodeNumber;
+                displayTitle = seriesTitle;
             }
 
-            // Extract episode number from filename if not found yet
-            if (episodeNumber === null) {
-                const numMatch = filename.match(/[Ee][Pp]?\s*(\d+)/);
-                if (numMatch) episodeNumber = parseInt(numMatch[1], 10);
-            }
-
-            // Upsert Series
+            // ── Upsert Series ──────────────────────────────────────────────
             if (!seriesCache[seriesTitle]) {
                 const s = await this.prisma.series.upsert({
                     where: { title: seriesTitle },
                     update: {},
-                    create: { title: seriesTitle },
+                    create: {
+                        title: seriesTitle,
+                        description: meta.description || null,
+                    },
                 });
                 seriesCache[seriesTitle] = s.id;
             }
 
-            // Upsert Video
+            // ── Upsert Video ───────────────────────────────────────────────
             await this.prisma.video.upsert({
                 where: { filename },
                 update: {
@@ -235,16 +231,23 @@ export class VideoService {
                     key,
                     seriesId: seriesCache[seriesTitle],
                     episodeNumber,
-                    title: null,
+                    title: displayTitle || null,
+                    description: meta.description || null,
                     lastModified: video.lastModified ? new Date(video.lastModified as unknown as string) : new Date(),
                     size: video.size ? BigInt(video.size as number) : BigInt(0),
                 },
             });
 
             syncedCount++;
+            this.logger.debug(`Synced: ${filename} → ${seriesTitle}`);
         }
 
-        this.logger.log(`Sync complete: ${syncedCount} videos, ${Object.keys(seriesCache).length} series.`);
+        this.logger.log(`Sync complete: ${syncedCount} videos across ${Object.keys(seriesCache).length} series`);
         return { synced: syncedCount, series: Object.keys(seriesCache).length };
+    }
+    async findByFilename(filename: string) {
+        return this.prisma.video.findUnique({
+            where: { filename },
+        });
     }
 }
